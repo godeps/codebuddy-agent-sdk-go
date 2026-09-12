@@ -17,6 +17,10 @@ var (
 	// ErrNotLoggedIn is returned when neither an API key nor a persisted CLI
 	// login is available.
 	ErrNotLoggedIn = errors.New("codebuddy: not authenticated (run `codebuddy login`, or set Options.Auth / CODEBUDDY_API_KEY)")
+	// ErrSessionNotEstablished is returned by control operations (e.g.
+	// SetModel) that the CLI only accepts once system/init has arrived —
+	// in practice after the first user turn has been sent.
+	ErrSessionNotEstablished = errors.New("codebuddy: session not established yet (send a turn first; the CLI rejects set_model before system/init)")
 	// ErrResultError is wrapped when the CLI reports a result-level error.
 	ErrResultError = errors.New("codebuddy: agent run failed")
 )

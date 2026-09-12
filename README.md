@@ -79,9 +79,23 @@ sess.Send("what number did I say?")
 res2, _, _ := sess.ReceiveResponse(60 * time.Second)  // "73"
 ```
 
-Mid-session control: `sess.Interrupt()`, `sess.SetModel(...)`,
-`sess.SetPermissionMode(...)`, `sess.Rewind(msgID, scope, dryRun)`
-(files / conversation / both — CodeBuddy extension over Claude Code).
+Mid-session control: `sess.Interrupt()`, `sess.SetPermissionMode(...)`,
+`sess.Rewind(msgID, scope, dryRun)` (files / conversation / both —
+CodeBuddy extension over Claude Code).
+
+Model management (verified against the real CLI):
+
+```go
+models, current := sess.Models()   // from the initialize handshake
+for _, m := range models {
+    fmt.Println(m.ID, m.Name)      // hy4-preview, hy3, glm-5.3, kimi-k3-2, ...
+}
+
+// NOTE: set_model only works once the session is established (after the
+// first turn); before that the SDK returns ErrSessionNotEstablished.
+// The switch takes effect from the NEXT turn.
+resp, err := sess.SetModel("hy3")  // resp: {Model, PreviousModel}
+```
 
 ### Runtime tool approval (can_use_tool)
 
@@ -139,6 +153,7 @@ opts := codebuddy.NewOptions().
 | Rewind (files/history) | `Session.Rewind` (Code | Conversation | CodeAndConversation, dry-run) |
 | Partial-message streaming | `WithPartialMessages` |
 | Model / turn limits | `WithModel` / `WithFallbackModel` / `WithMaxTurns` / `WithEffort` |
+| Model list + mid-session switch | `Session.Models()` / `Session.SetModel()` |
 | Tool restriction | `WithAllowedTools` / `WithDisallowedTools` / `WithTools` |
 | Settings isolation | `WithSettingSources` (SDK default: `none`) |
 | Background task events | `system/task_*` messages (`Session` keeps reading past results) |
@@ -184,7 +199,9 @@ CODEBUDDY_SDK_E2E=1 go test -run TestE2E -v   # against the real CLI
 
 E2E coverage: one-shot query, multi-turn session context retention,
 can_use_tool **allow** (command really executes) and **deny** (CLI honors the
-denial).
+denial), model list from the initialize handshake, and mid-session
+`SetModel` (confirmed by the CLI and by the next turn actually running on
+the new model).
 
 ## Examples
 

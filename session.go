@@ -3,6 +3,8 @@ package codebuddy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,26 +137,81 @@ func (s *Session) SessionID() string {
 	return s.r.lastSessionID()
 }
 
+// Models returns the account's available model list captured from the
+// initialize handshake (id + display name), plus the current model id at
+// handshake time. Returns nil when the handshake did not carry a model list
+// (older CLIs).
+func (s *Session) Models() ([]protocol.ModelInfo, string) {
+	ir := s.r.initializeResponse()
+	if ir == nil {
+		return nil, ""
+	}
+	return ir.Models, ir.CurrentModelID
+}
+
+// SlashCommands returns the CLI slash commands captured at handshake.
+func (s *Session) SlashCommands() []protocol.SlashCommand {
+	ir := s.r.initializeResponse()
+	if ir == nil {
+		return nil
+	}
+	return ir.Commands
+}
+
 // Interrupt aborts the current turn.
 func (s *Session) Interrupt() error {
 	_, err := s.r.sendControlRequest(protocol.InterruptRequest{Subtype: protocol.ControlInterrupt}, 30*time.Second)
 	return err
 }
 
-// SetPermissionMode switches the permission mode mid-session.
+// SetPermissionMode switches the permission mode mid-session. The CLI
+// requires the session id; it is taken from system/init automatically.
 func (s *Session) SetPermissionMode(mode protocol.PermissionMode) error {
 	_, err := s.r.sendControlRequest(protocol.SetPermissionModeRequest{
-		Subtype: protocol.ControlSetPermissionMode, Mode: mode,
+		Subtype:   protocol.ControlSetPermissionMode,
+		SessionID: s.r.lastSessionID(),
+		Mode:      mode,
 	}, 30*time.Second)
 	return err
 }
 
-// SetModel switches the model mid-session.
-func (s *Session) SetModel(model string) error {
-	_, err := s.r.sendControlRequest(protocol.SetModelRequest{
-		Subtype: protocol.ControlSetModel, Model: model,
+// SetModel switches the model mid-session and returns the CLI confirmation
+// (new model + previous model).
+//
+// IMPORTANT (verified against CLI 2.150): the CLI only accepts set_model once
+// the session is established — i.e. after at least one user turn has been
+// processed. Before that it replies "Session not found"; this SDK maps both
+// the local guard and that CLI error to ErrSessionNotEstablished. The switch
+// takes effect from the NEXT turn; the in-flight turn keeps its model.
+func (s *Session) SetModel(model string) (*protocol.SetModelResponse, error) {
+	if s.r.lastSessionID() == "" {
+		return nil, ErrSessionNotEstablished
+	}
+	resp, err := s.r.sendControlRequest(protocol.SetModelRequest{
+		Subtype:   protocol.ControlSetModel,
+		SessionID: s.r.lastSessionID(),
+		Model:     model,
 	}, 30*time.Second)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	body, err := resp.Body()
+	if err != nil {
+		return nil, err
+	}
+	if body.Subtype != "success" {
+		if strings.Contains(body.Error, "Session not found") {
+			return nil, fmt.Errorf("%w: %s", ErrSessionNotEstablished, body.Error)
+		}
+		return nil, &ControlRequestError{RequestID: body.RequestID, Message: body.Error}
+	}
+	var out protocol.SetModelResponse
+	if len(body.Response) > 0 {
+		if err := json.Unmarshal(body.Response, &out); err != nil {
+			return nil, err
+		}
+	}
+	return &out, nil
 }
 
 // RewindScope selects what a Rewind rolls back.

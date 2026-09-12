@@ -174,6 +174,9 @@ type runner struct {
 
 	sessionMu sync.RWMutex
 	sessionID string
+
+	initMu   sync.RWMutex
+	initResp *protocol.InitializeResponse
 }
 
 func newRunner(ctx context.Context, opts *Options, oneShot bool) (*runner, error) {
@@ -346,8 +349,9 @@ func (r *runner) routeResponse(m *protocol.ControlResponse) {
 	}
 }
 
-// handshake sends the initialize control request and waits briefly for the
-// response (the agent stream proceeds regardless).
+// handshake sends the initialize control request and captures the response
+// (which carries the model list, slash commands, etc.). The agent stream
+// proceeds regardless; a handshake failure is non-fatal for plain prompts.
 func (r *runner) handshake() error {
 	req := protocol.InitializeRequest{
 		Subtype:            protocol.ControlInitialize,
@@ -360,8 +364,22 @@ func (r *runner) handshake() error {
 	if len(req.SdkMcpServers) > 0 {
 		req.Capabilities = &protocol.InitializeCapabilities{}
 	}
-	_, err := r.sendControlRequest(req, 30*time.Second)
-	return err
+	resp, err := r.sendControlRequest(req, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	body, berr := resp.Body()
+	if berr != nil || body.Subtype != "success" || len(body.Response) == 0 {
+		return nil
+	}
+	var initResp protocol.InitializeResponse
+	if err := json.Unmarshal(body.Response, &initResp); err != nil {
+		return nil
+	}
+	r.initMu.Lock()
+	r.initResp = &initResp
+	r.initMu.Unlock()
+	return nil
 }
 
 // sendControlRequest sends a control_request envelope and awaits the matching
@@ -539,6 +557,13 @@ func (r *runner) lastSessionID() string {
 	r.sessionMu.RLock()
 	defer r.sessionMu.RUnlock()
 	return r.sessionID
+}
+
+// initializeResponse returns the captured initialize handshake response.
+func (r *runner) initializeResponse() *protocol.InitializeResponse {
+	r.initMu.RLock()
+	defer r.initMu.RUnlock()
+	return r.initResp
 }
 
 func newRequestID() string {

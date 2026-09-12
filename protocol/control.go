@@ -104,21 +104,69 @@ type InitializeCapabilities struct {
 	AskUserQuestion bool `json:"askUserQuestion,omitempty"`
 }
 
+// InitializeResponse is the payload of the CLI's initialize control_response.
+// Verified against CLI 2.150: it carries the available model list, the
+// current model id, slash commands, output styles, and account info.
+type InitializeResponse struct {
+	Commands []SlashCommand `json:"commands,omitempty"`
+	// Models is the account's available model list.
+	Models                []ModelInfo  `json:"models,omitempty"`
+	CurrentModelID        string       `json:"currentModelId,omitempty"`
+	OutputStyle           string       `json:"output_style,omitempty"`
+	AvailableOutputStyles []string     `json:"available_output_styles,omitempty"`
+	Account               *AccountInfo `json:"account,omitempty"`
+}
+
+// SlashCommand describes one CLI slash command.
+type SlashCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// ModelInfo is one entry of the initialize response's model list.
+type ModelInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
+// AccountInfo is the logged-in account summary (token fields intentionally
+// not modeled; never log or persist this struct).
+type AccountInfo struct {
+	UID      string `json:"uid,omitempty"`
+	Nickname string `json:"nickname,omitempty"`
+	Type     string `json:"type,omitempty"`
+	UserName string `json:"userName,omitempty"`
+}
+
 // InterruptRequest aborts the current turn.
 type InterruptRequest struct {
 	Subtype string `json:"subtype"` // "interrupt"
 }
 
 // SetPermissionModeRequest switches the permission mode mid-session.
+// SessionID must be the CLI-assigned session id (from system/init); the CLI
+// rejects requests that omit it or reference an unestablished session.
 type SetPermissionModeRequest struct {
-	Subtype string         `json:"subtype"` // "set_permission_mode"
-	Mode    PermissionMode `json:"mode"`
+	Subtype   string         `json:"subtype"` // "set_permission_mode"
+	SessionID string         `json:"session_id,omitempty"`
+	Mode      PermissionMode `json:"mode"`
 }
 
-// SetModelRequest switches the model mid-session.
+// SetModelRequest switches the model mid-session. The CLI only accepts it
+// once the session is established (i.e. after the first user turn has been
+// processed); before that it replies "Session not found". Verified against
+// CLI 2.150: the response echoes {session_id, model, previous_model}.
 type SetModelRequest struct {
-	Subtype string `json:"subtype"` // "set_model"
-	Model   string `json:"model"`
+	Subtype   string `json:"subtype"` // "set_model"
+	SessionID string `json:"session_id,omitempty"`
+	Model     string `json:"model"`
+}
+
+// SetModelResponse is the payload of a successful set_model response.
+type SetModelResponse struct {
+	SessionID     string `json:"session_id,omitempty"`
+	Model         string `json:"model,omitempty"`
+	PreviousModel string `json:"previous_model,omitempty"`
 }
 
 // RewindRequest rolls back workspace files and/or conversation history to the
