@@ -158,10 +158,22 @@ func (s *Session) SlashCommands() []protocol.SlashCommand {
 	return ir.Commands
 }
 
-// Interrupt aborts the current turn.
+// Interrupt aborts the current turn. Like set_model, the CLI requires an
+// established session; ErrSessionNotEstablished is returned before that.
 func (s *Session) Interrupt() error {
-	_, err := s.r.sendControlRequest(protocol.InterruptRequest{Subtype: protocol.ControlInterrupt}, 30*time.Second)
-	return err
+	if s.r.lastSessionID() == "" {
+		return ErrSessionNotEstablished
+	}
+	_, err := s.r.sendControlRequest(protocol.InterruptRequest{
+		Subtype:   protocol.ControlInterrupt,
+		SessionID: s.r.lastSessionID(),
+		Reason:    "Interrupted by user",
+	}, 30*time.Second)
+	if err != nil {
+		// Mirror the TS SDK: interrupt errors are non-fatal.
+		return err
+	}
+	return nil
 }
 
 // SetPermissionMode switches the permission mode mid-session. The CLI

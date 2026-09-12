@@ -355,7 +355,7 @@ func (r *runner) routeResponse(m *protocol.ControlResponse) {
 func (r *runner) handshake() error {
 	req := protocol.InitializeRequest{
 		Subtype:            protocol.ControlInitialize,
-		Hooks:              r.opts.Hooks,
+		Hooks:              buildHooksConfig(r.opts.Hooks),
 		SystemPrompt:       r.opts.SystemPrompt,
 		AppendSystemPrompt: r.opts.AppendSystemPrompt,
 		Agents:             r.opts.Agents,
@@ -380,6 +380,34 @@ func (r *runner) handshake() error {
 	r.initResp = &initResp
 	r.initMu.Unlock()
 	return nil
+}
+
+// buildHooksConfig translates host-facing hook registrations into the wire
+// shape the CLI expects: {event: [{matcher, hookCallbackIds, timeout}]}.
+// Callback ids follow the TS SDK's deterministic scheme
+// hook_{event}_{matcherIdx}_{hookIdx} so handleHook can route responses
+// without extra bookkeeping.
+func buildHooksConfig(hooks map[protocol.HookEvent][]protocol.HookCallbackMatcher) map[protocol.HookEvent][]protocol.HookMatcherConfig {
+	if len(hooks) == 0 {
+		return nil
+	}
+	out := make(map[protocol.HookEvent][]protocol.HookMatcherConfig, len(hooks))
+	for event, matchers := range hooks {
+		cfg := make([]protocol.HookMatcherConfig, 0, len(matchers))
+		for mi, m := range matchers {
+			ids := make([]string, 0, len(m.Hooks))
+			for hi := range m.Hooks {
+				ids = append(ids, protocol.HookCallbackID(event, mi, hi))
+			}
+			cfg = append(cfg, protocol.HookMatcherConfig{
+				Matcher:         m.Matcher,
+				HookCallbackIDs: ids,
+				Timeout:         m.Timeout,
+			})
+		}
+		out[event] = cfg
+	}
+	return out
 }
 
 // sendControlRequest sends a control_request envelope and awaits the matching
@@ -479,20 +507,35 @@ func (r *runner) handleHook(req *protocol.ControlRequest) {
 		return
 	}
 	if r.opts.HookCallback == nil {
-		r.respondSuccess(req.RequestID, protocol.HookJSONOutput{})
+		// Mirror the TS SDK default: proceed.
+		r.respondSuccess(req.RequestID, protocol.HookJSONOutput{Continue: boolPtr(true)})
 		return
 	}
 	var input protocol.HookInput
-	if len(inner.HookInput) > 0 {
-		_ = json.Unmarshal(inner.HookInput, &input)
+	if len(inner.Input) > 0 {
+		_ = json.Unmarshal(inner.Input, &input)
 	}
 	out, err := r.opts.HookCallback(r.ctx, &inner, &input)
 	if err != nil {
-		r.respondError(req.RequestID, err.Error())
+		// Mirror the TS SDK: callback error -> stop the turn with the error
+		// as the reason (domain-level outcome, not a protocol error).
+		r.respondSuccess(req.RequestID, protocol.HookJSONOutput{
+			Continue:   boolPtr(false),
+			StopReason: err.Error(),
+		})
 		return
+	}
+	// CLI 2.150 quirk (probe-verified): a PreToolUse block only takes effect
+	// when "continue" is false — decision:"block" alone is ignored, contrary
+	// to the docs. Normalize block decisions so hosts get documented
+	// behavior.
+	if out.Decision == "block" && (out.Continue == nil || *out.Continue) {
+		out.Continue = boolPtr(false)
 	}
 	r.respondSuccess(req.RequestID, out)
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 func (r *runner) handleMcpMessage(req *protocol.ControlRequest) {
 	var inner protocol.McpMessageRequest

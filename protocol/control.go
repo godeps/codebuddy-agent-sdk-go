@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ControlRequest is the wire envelope exchanged between the CLI and the SDK
 // for bidirectional control operations outside the agentic loop.
@@ -83,20 +86,41 @@ func NewErrorResponse(requestID, message string) ControlResponse {
 
 // InitializeRequest is sent by the SDK as the first control_request. The CLI
 // replies with a control_response carrying slash commands, agents, MCP
-// servers, and (importantly) starts emitting system/init on the agent stream.
+// servers, the model list, and (importantly) starts emitting system/init on
+// the agent stream.
+//
+// Hooks are declared as {event: [{matcher, hookCallbackIds:[...], timeout}]}
+// — the same wire shape as the TypeScript SDK's buildHooksConfig(). Callback
+// ids are generated deterministically as hook_{event}_{matcherIdx}_{hookIdx};
+// the CLI later invokes them via hook_callback control requests.
 //
 // The canUseTool capability is implicit: the CLI sends can_use_tool control
 // requests whenever the permission mode requires approval and the SDK has an
 // open stdin channel; hosts that cannot answer should run with
 // PermissionMode == bypassPermissions or --dangerously-skip-permissions.
 type InitializeRequest struct {
-	Subtype            string                              `json:"subtype"` // "initialize"
-	Hooks              map[HookEvent][]HookCallbackMatcher `json:"hooks,omitempty"`
-	SystemPrompt       string                              `json:"systemPrompt,omitempty"`
-	AppendSystemPrompt string                              `json:"appendSystemPrompt,omitempty"`
-	Agents             map[string]AgentDefinition          `json:"agents,omitempty"`
-	SdkMcpServers      []string                            `json:"sdkMcpServers,omitempty"`
-	Capabilities       *InitializeCapabilities             `json:"capabilities,omitempty"`
+	Subtype            string                            `json:"subtype"` // "initialize"
+	Hooks              map[HookEvent][]HookMatcherConfig `json:"hooks,omitempty"`
+	SystemPrompt       string                            `json:"systemPrompt,omitempty"`
+	AppendSystemPrompt string                            `json:"appendSystemPrompt,omitempty"`
+	Agents             map[string]AgentDefinition        `json:"agents,omitempty"`
+	SdkMcpServers      []string                          `json:"sdkMcpServers,omitempty"`
+	Capabilities       *InitializeCapabilities           `json:"capabilities,omitempty"`
+}
+
+// HookMatcherConfig is the initialize-time declaration of one hook matcher:
+// an optional tool-name matcher plus the callback ids the CLI should invoke.
+type HookMatcherConfig struct {
+	Matcher         string   `json:"matcher,omitempty"`
+	HookCallbackIDs []string `json:"hookCallbackIds"`
+	Timeout         *int     `json:"timeout,omitempty"`
+}
+
+// HookCallbackID builds the deterministic callback id for the hook at
+// (event, matcherIndex, hookIndex) — matching the TypeScript SDK's scheme so
+// the CLI routes hook_callback requests with ids the host can anticipate.
+func HookCallbackID(event HookEvent, matcherIndex, hookIndex int) string {
+	return fmt.Sprintf("hook_%s_%d_%d", event, matcherIndex, hookIndex)
 }
 
 // InitializeCapabilities declares optional protocol capabilities.
@@ -138,9 +162,12 @@ type AccountInfo struct {
 	UserName string `json:"userName,omitempty"`
 }
 
-// InterruptRequest aborts the current turn.
+// InterruptRequest aborts the current turn. The CLI requires the session id
+// (same rule as set_model); TS SDK also sends a human-readable reason.
 type InterruptRequest struct {
-	Subtype string `json:"subtype"` // "interrupt"
+	Subtype   string `json:"subtype"` // "interrupt"
+	SessionID string `json:"session_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // SetPermissionModeRequest switches the permission mode mid-session.
@@ -248,12 +275,14 @@ func DenyTool(toolUseID, reason string) CanUseToolResponse {
 	return CanUseToolResponse{Allowed: false, Reason: reason, ToolUseID: toolUseID}
 }
 
-// HookCallbackRequest invokes a host hook registered via initialize.
+// HookCallbackRequest invokes a host hook registered via initialize. Wire
+// fields (verified against the TS SDK's handleHookCallback): callback_id
+// (from the initialize registration), input (the hook payload), tool_use_id.
 type HookCallbackRequest struct {
-	Subtype   string          `json:"subtype"` // "hook_callback"
-	HookID    string          `json:"hook_id"`
-	HookEvent string          `json:"hook_event_name,omitempty"`
-	HookInput json.RawMessage `json:"input,omitempty"`
+	Subtype    string          `json:"subtype"` // "hook_callback"
+	CallbackID string          `json:"callback_id"`
+	Input      json.RawMessage `json:"input,omitempty"`
+	ToolUseID  string          `json:"tool_use_id,omitempty"`
 }
 
 // McpMessageRequest proxies a JSON-RPC frame to an in-process SDK MCP server.
@@ -277,16 +306,22 @@ type AgentDefinition struct {
 	Model       string   `json:"model,omitempty"`
 }
 
-// HookCallbackMatcher is one hook registration: an optional matcher plus the
-// callback IDs to invoke. Callbacks run in the host via hook_callback control
-// requests.
+// HookCallbackMatcher is one hook registration: an optional tool-name matcher
+// plus the callbacks to invoke. Callbacks run in the host via hook_callback
+// control requests; the SDK generates deterministic callback ids
+// (hook_{event}_{matcherIdx}_{hookIdx}) when declaring them at initialize.
 type HookCallbackMatcher struct {
 	Matcher string         `json:"matcher,omitempty"`
 	Hooks   []HookCallback `json:"hooks"`
+	// Timeout is the per-callback budget in seconds the CLI enforces while
+	// waiting for the host's hook response. Nil = CLI default.
+	Timeout *int `json:"-"`
 }
 
-// HookCallback identifies a host-side hook callback.
+// HookCallback identifies a host-side hook callback. For SDK-registered hooks
+// only the list position matters (ids are generated deterministically); Type
+// and CallbackID are kept for wire round-tripping.
 type HookCallback struct {
-	Type       string `json:"type"` // "prompt" | "command" | "callback"
+	Type       string `json:"type,omitempty"`
 	CallbackID string `json:"callback_id,omitempty"`
 }

@@ -118,6 +118,12 @@ opts := codebuddy.NewOptions().
 > `{behavior: "allow"}` envelope. The SDK translates `protocol.Allow` /
 > `protocol.Deny` for you.
 
+> **Hook note (CLI 2.150, probe-verified)**: a `PreToolUse` block only takes
+> effect when `continue` is false — a bare `decision: "block"` is ignored by
+> the CLI despite the docs. The SDK normalizes this: returning
+> `HookJSONOutput{Decision: "block", Reason: ...}` automatically sets
+> `continue: false` on the wire, so the documented behavior is what you get.
+
 ### Hooks & in-process MCP servers
 
 ```go
